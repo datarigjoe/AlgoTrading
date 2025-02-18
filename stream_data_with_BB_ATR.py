@@ -199,6 +199,172 @@
 # except Exception as e:
 #     print(f" Initial Connection Failed: {e}")
 #     reconnect()
+
+# import time
+# import datetime
+# import csv
+# import threading
+# import numpy as np
+# from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+# from SmartApi import SmartConnect
+# from pyotp import TOTP
+
+# # SmartAPI Setup
+# API_KEY = "4GznkDiG"
+# CLIENT_ID = "R103352"
+# PIN = 7020
+# TOTP_SECRET = "RV62S7GJBGHGWKRAYSQ6SRTPVM"
+
+# obj = SmartConnect(API_KEY)
+# data = obj.generateSession(CLIENT_ID, PIN, TOTP(TOTP_SECRET).now())
+# feed_token = obj.getfeedToken()
+
+# # Define token list for the stocks
+# token_list = [
+#     {"exchangeType": 1, "tokens": ["25"]},  # ADANIENT
+#     {"exchangeType": 1, "tokens": ["4306"]},  # SHRIRAMFIN
+#     {"exchangeType": 1, "tokens": ["14977"]},  # POWERGRID
+#     {"exchangeType": 1, "tokens": ["15083"]},  # ADANIPORTS
+#     {"exchangeType": 1, "tokens": ["5258"]},  # INDUSINDBK
+#     # {"exchangeType": 1, "tokens": ["26009"]},  # BANKNIFTY
+
+# ]
+
+# # CSV File Setup
+# filename = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".csv"
+# csv_path = rf'D:\Angel_Smart_Api\{filename}'
+
+# # WebSocket Initialization
+# sws = SmartWebSocketV2(data["data"]["jwtToken"], API_KEY, CLIENT_ID, feed_token)
+
+# # Historical Data Storage (For Tick-Based Buffer)
+# price_history = []
+# highs = []
+# lows = []
+# closes = []
+
+# # Indicator Parameters
+# BOLLINGER_WINDOW = 20
+# ATR_WINDOW = 14
+# EMA_SHORT_PERIOD = 12
+# EMA_LONG_PERIOD = 26
+# RSI_PERIOD = 14
+
+# # Global Variables for Indicators
+# upper_band, lower_band, atr_value = None, None, None
+# ema_short, ema_long, rsi_value = None, None, None
+
+# # Function: Exponential Moving Average (EMA)
+# def calculate_ema(prices, period):
+#     """Calculate EMA using a list of prices."""
+#     if len(prices) < period:
+#         return None
+#     return np.round(np.mean(prices[-period:]), 2)  # Simple EMA Calculation
+
+# # Function: RSI Calculation
+# def calculate_rsi(prices, period=14):
+#     """Calculate Relative Strength Index (RSI)."""
+#     if len(prices) < period + 1:
+#         return None
+#     deltas = np.diff(prices)
+#     gains = np.where(deltas > 0, deltas, 0)
+#     losses = np.where(deltas < 0, -deltas, 0)
+#     avg_gain = np.mean(gains[-period:])
+#     avg_loss = np.mean(losses[-period:])
+#     if avg_loss == 0:
+#         return 100  # Avoid division by zero
+#     rs = avg_gain / avg_loss
+#     return np.round(100 - (100 / (1 + rs)), 2)
+
+# # Function: Bollinger Bands Calculation
+# def calculate_bollinger_bands(prices, window=20):
+#     if len(prices) < window:
+#         return None, None
+#     sma = np.mean(prices[-window:])
+#     std = np.std(prices[-window:])
+#     return sma + (2 * std), sma - (2 * std)
+
+# # Function: ATR Calculation
+# def calculate_atr(highs, lows, closes, window=14):
+#     if len(highs) < window:
+#         return None
+#     tr_values = [
+#         max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+#         for i in range(1, len(highs))
+#     ]
+#     return np.mean(tr_values[-window:])
+
+# # Function: Process Indicators in Separate Thread
+# def process_indicators():
+#     global upper_band, lower_band, atr_value, ema_short, ema_long, rsi_value
+    
+#     if len(price_history) >= BOLLINGER_WINDOW:
+#         upper_band, lower_band = calculate_bollinger_bands(price_history)
+    
+#     if len(highs) >= ATR_WINDOW:
+#         atr_value = calculate_atr(highs, lows, closes)
+    
+#     ema_short = calculate_ema(closes, EMA_SHORT_PERIOD)
+#     ema_long = calculate_ema(closes, EMA_LONG_PERIOD)
+#     rsi_value = calculate_rsi(closes, RSI_PERIOD)
+
+# # WebSocket: Data Handling
+# def on_data(wsapp, message):
+#     global price_history, highs, lows, closes
+    
+#     try:
+#         last_price = message['last_traded_price']
+#         high_price = message['high_price_of_the_day']
+#         low_price = message['low_price_of_the_day']
+        
+#         price_history.append(last_price)
+#         highs.append(high_price)
+#         lows.append(low_price)
+#         closes.append(last_price)
+        
+#         price_history = price_history[-BOLLINGER_WINDOW:]
+#         highs = highs[-ATR_WINDOW:]
+#         lows = lows[-ATR_WINDOW:]
+#         closes = closes[-EMA_LONG_PERIOD:]
+        
+#         threading.Thread(target=process_indicators, daemon=True).start()
+        
+#         message.update({
+#             "UPPER BAND": upper_band,
+#             "LOWER BAND": lower_band,
+#             "ATR": atr_value,
+#             "EMA SHORT": ema_short,
+#             "EMA LONG": ema_long,
+#             "RSI": rsi_value,
+#             "exchange_timestamp": datetime.datetime.fromtimestamp(
+#                 message.get("exchange_timestamp", 0) / 1000
+#             ).strftime('%Y-%m-%d %H:%M:%S')
+#         })
+        
+#         print("Ticks:", message)
+        
+#         with open(csv_path, mode='a', newline='') as file:
+#             writer = csv.DictWriter(file, fieldnames=message.keys())
+#             if file.tell() == 0:
+#                 writer.writeheader()
+#             writer.writerow(message)
+    
+#     except Exception as e:
+#         print(f"Data Processing Error: {e}")
+
+# # WebSocket Callbacks
+# sws.on_open = lambda wsapp: sws.subscribe("stream_1", 3, token_list)
+# sws.on_data = on_data
+# sws.on_error = lambda wsapp, error: print(f"WebSocket Error: {error}")
+# sws.on_close = lambda wsapp, close_status_code, close_msg: print(f"WebSocket Closed: {close_status_code} - {close_msg}")
+
+# # Start WebSocket Connection
+# try:
+#     sws.connect()
+# except Exception as e:
+#     print(f"Initial Connection Failed: {e}")
+
+
 import time
 import datetime
 import csv
@@ -225,18 +391,16 @@ token_list = [
     {"exchangeType": 1, "tokens": ["14977"]},  # POWERGRID
     {"exchangeType": 1, "tokens": ["15083"]},  # ADANIPORTS
     {"exchangeType": 1, "tokens": ["5258"]},  # INDUSINDBK
-    # {"exchangeType": 1, "tokens": ["26009"]},  # BANKNIFTY
-
 ]
 
 # CSV File Setup
 filename = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".csv"
-csv_path = rf'D:\Angel_Smart_Api\{filename}'
+csv_path = rf'C:\ALGOTRADING_PROJECT\{filename}'
 
 # WebSocket Initialization
 sws = SmartWebSocketV2(data["data"]["jwtToken"], API_KEY, CLIENT_ID, feed_token)
 
-# Historical Data Storage (For Tick-Based Buffer)
+# Historical Data Storage
 price_history = []
 highs = []
 lows = []
@@ -253,16 +417,19 @@ RSI_PERIOD = 14
 upper_band, lower_band, atr_value = None, None, None
 ema_short, ema_long, rsi_value = None, None, None
 
+# Function: Check if Market is Open
+def is_market_open():
+    now = datetime.datetime.now()
+    return (now.hour == 9 and now.minute >= 15) or (9 < now.hour < 15) or (now.hour == 15 and now.minute <= 30)
+
 # Function: Exponential Moving Average (EMA)
 def calculate_ema(prices, period):
-    """Calculate EMA using a list of prices."""
     if len(prices) < period:
         return None
-    return np.round(np.mean(prices[-period:]), 2)  # Simple EMA Calculation
+    return np.round(np.mean(prices[-period:]), 2)
 
 # Function: RSI Calculation
 def calculate_rsi(prices, period=14):
-    """Calculate Relative Strength Index (RSI)."""
     if len(prices) < period + 1:
         return None
     deltas = np.diff(prices)
@@ -312,6 +479,10 @@ def on_data(wsapp, message):
     global price_history, highs, lows, closes
     
     try:
+        now = datetime.datetime.now()
+        if not is_market_open():
+            return  # Ignore data outside market hours
+
         last_price = message['last_traded_price']
         high_price = message['high_price_of_the_day']
         low_price = message['low_price_of_the_day']
@@ -321,6 +492,7 @@ def on_data(wsapp, message):
         lows.append(low_price)
         closes.append(last_price)
         
+        # Keep only the last N values required for indicators
         price_history = price_history[-BOLLINGER_WINDOW:]
         highs = highs[-ATR_WINDOW:]
         lows = lows[-ATR_WINDOW:]
@@ -362,3 +534,4 @@ try:
     sws.connect()
 except Exception as e:
     print(f"Initial Connection Failed: {e}")
+
