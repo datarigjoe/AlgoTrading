@@ -363,8 +363,6 @@
 #     sws.connect()
 # except Exception as e:
 #     print(f"Initial Connection Failed: {e}")
-
-
 import time
 import datetime
 import csv
@@ -373,6 +371,7 @@ import numpy as np
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 from SmartApi import SmartConnect
 from pyotp import TOTP
+import pandas as pd
 
 # SmartAPI Setup
 API_KEY = "4GznkDiG"
@@ -391,6 +390,8 @@ token_list = [
     {"exchangeType": 1, "tokens": ["14977"]},  # POWERGRID
     {"exchangeType": 1, "tokens": ["15083"]},  # ADANIPORTS
     {"exchangeType": 1, "tokens": ["5258"]},  # INDUSINDBK
+    # {"exchangeType": 1, "tokens": ["26009"]},  # BANKNIFTY
+
 ]
 
 # CSV File Setup
@@ -399,8 +400,15 @@ csv_path = rf'C:\ALGOTRADING_PROJECT\{filename}'
 
 # WebSocket Initialization
 sws = SmartWebSocketV2(data["data"]["jwtToken"], API_KEY, CLIENT_ID, feed_token)
+# Data Storage
+data_df = pd.DataFrame()
+lock = threading.Lock()
 
-# Historical Data Storage
+# Function to check if the current time is within market hours (9:15 AM - 3:30 PM)
+def is_market_open():
+    now = datetime.datetime.now()
+    return (now.hour == 9 and now.minute >= 15) or (9 < now.hour < 15) or (now.hour == 15 and now.minute <= 30)
+# Historical Data Storage (For Tick-Based Buffer)
 price_history = []
 highs = []
 lows = []
@@ -417,19 +425,16 @@ RSI_PERIOD = 14
 upper_band, lower_band, atr_value = None, None, None
 ema_short, ema_long, rsi_value = None, None, None
 
-# Function: Check if Market is Open
-def is_market_open():
-    now = datetime.datetime.now()
-    return (now.hour == 9 and now.minute >= 15) or (9 < now.hour < 15) or (now.hour == 15 and now.minute <= 30)
-
 # Function: Exponential Moving Average (EMA)
 def calculate_ema(prices, period):
+    """Calculate EMA using a list of prices."""
     if len(prices) < period:
         return None
-    return np.round(np.mean(prices[-period:]), 2)
+    return np.round(np.mean(prices[-period:]), 2)  # Simple EMA Calculation
 
 # Function: RSI Calculation
 def calculate_rsi(prices, period=14):
+    """Calculate Relative Strength Index (RSI)."""
     if len(prices) < period + 1:
         return None
     deltas = np.diff(prices)
@@ -474,15 +479,30 @@ def process_indicators():
     ema_long = calculate_ema(closes, EMA_LONG_PERIOD)
     rsi_value = calculate_rsi(closes, RSI_PERIOD)
 
+# Function to save DataFrame at 3:30 PM
+def save_dataframe():
+    global data_df
+    while True:
+        now = datetime.datetime.now()
+        if now.hour == 15 and now.minute == 30:  # 3:30 PM
+            filename = f"C:/ALGOTRADING_PROJECT/{now.strftime('%Y%m%d-%H%M%S')}.csv"
+            with lock:
+                if not data_df.empty:
+                    data_df.to_csv(filename, index=False)
+                    print(f"Data saved to {filename}")
+                    data_df = pd.DataFrame()  # Clear DataFrame after saving
+            time.sleep(60)  # Avoid multiple saves in the same minute
+        time.sleep(10)  # Check every 10 seconds
+
 # WebSocket: Data Handling
 def on_data(wsapp, message):
-    global price_history, highs, lows, closes
+    global data_df,price_history, highs, lows, closes
     
     try:
         now = datetime.datetime.now()
         if not is_market_open():
             return  # Ignore data outside market hours
-
+    
         last_price = message['last_traded_price']
         high_price = message['high_price_of_the_day']
         low_price = message['low_price_of_the_day']
@@ -492,7 +512,6 @@ def on_data(wsapp, message):
         lows.append(low_price)
         closes.append(last_price)
         
-        # Keep only the last N values required for indicators
         price_history = price_history[-BOLLINGER_WINDOW:]
         highs = highs[-ATR_WINDOW:]
         lows = lows[-ATR_WINDOW:]
@@ -511,6 +530,11 @@ def on_data(wsapp, message):
                 message.get("exchange_timestamp", 0) / 1000
             ).strftime('%Y-%m-%d %H:%M:%S')
         })
+        # Store data in DataFrame safely using a lock
+        with lock:
+            temp_df = pd.DataFrame([message])
+            data_df = pd.concat([data_df, temp_df], ignore_index=True)
+
         
         print("Ticks:", message)
         
@@ -532,6 +556,7 @@ sws.on_close = lambda wsapp, close_status_code, close_msg: print(f"WebSocket Clo
 # Start WebSocket Connection
 try:
     sws.connect()
+    threading.Thread(target=save_dataframe, daemon=True).start()
 except Exception as e:
     print(f"Initial Connection Failed: {e}")
 
