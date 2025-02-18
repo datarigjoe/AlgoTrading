@@ -3,14 +3,15 @@ import datetime
 import csv
 import pandas as pd
 from pyotp import TOTP
+import json
+import http.client
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
-import place_order
 # -----------------------------------------------
 # API and WebSocket Setup
 # -----------------------------------------------
 
-KEY_PATH = r"C:\ALGOTRADING_PROJECT"
+KEY_PATH = r"C:\AUTOMATE_TRADING"
 os.chdir(KEY_PATH)
 
 # Read API credentials
@@ -38,7 +39,7 @@ RSI_PERIOD = 14
 # Trade Settings
 TRADE_COOLDOWN_PERIOD = datetime.timedelta(seconds=180)
 MIN_HOLD_TIME = datetime.timedelta(minutes=3)
-FORCE_SELL_TIME = datetime.time(15, 5)  # 3:05 PM
+# FORCE_SELL_TIME = datetime.time(15, 5)  # 3:05 PM
 
 # Data Buffers
 price_data = {}         # Stores price history for each token
@@ -48,6 +49,41 @@ trade_cooldowns = {}    # Prevents quick repeated trades
 # -----------------------------------------------
 # Indicator Calculations
 # -----------------------------------------------
+
+def place_order(transaction_type, token, price, jwt_token, api_key,symbol):
+    """Places a buy or sell order."""
+    conn = http.client.HTTPSConnection("apiconnect.angelbroking.com")
+    payload = {
+        "variety": "NORMAL",
+        "trading_symbol": symbol,
+        "symboltoken": token,
+        "transactiontype": transaction_type,
+        "exchange": "NSE",
+        "ordertype": "MARKET",
+        "producttype": "INTRADAY",
+        "duration": "DAY",
+        "price": str(price),
+        "squareoff": "0",
+        "stoploss": "0",
+        "quantity": "1"
+    }
+    payload_json = json.dumps(payload)
+    headers = {
+        'Authorization': jwt_token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-UserType': 'USER',
+        'X-SourceID': 'WEB',
+        'X-ClientLocalIP': 'CLIENT_LOCAL_IP',
+        'X-ClientPublicIP': 'CLIENT_PUBLIC_IP',
+        'X-MACAddress': 'MAC_ADDRESS',
+        'X-PrivateKey': api_key
+    }
+    url = "/rest/secure/angelbroking/order/v1/placeOrder"
+    conn.request("POST", url, payload_json, headers)
+    res = conn.getresponse()
+    response_data = res.read()
+    print(response_data.decode("utf-8"))
 
 def calculate_ema(prices, period):
     """Calculate Exponential Moving Average (EMA)."""
@@ -109,23 +145,23 @@ def log_order(timestamp, token, transaction_type, price):
             writer.writerow(["Timestamp", "Token", "Transaction Type", "Price"])
         writer.writerow([timestamp, token, transaction_type, price])
 
-def force_close_trades(timestamp):
-    """Force close all open trades at 3:05 PM."""
-    global trade_positions, trade_cooldowns
+# def force_close_trades(timestamp):
+#     """Force close all open trades at 3:05 PM."""
+#     global trade_positions, trade_cooldowns
 
-    for token, trade_info in list(trade_positions.items()):
-        current_price = price_data[token][-1] if token in price_data and price_data[token] else None
-        if not current_price:
-            continue
+#     for token, trade_info in list(trade_positions.items()):
+#         current_price = price_data[token][-1] if token in price_data and price_data[token] else None
+#         if not current_price:
+#             continue
 
-        last_trade = trade_info["type"]
-        if last_trade == "BUY":
-            log_trade(timestamp, token, "SELL", current_price)  # Sell to close
-        elif last_trade == "SELL":
-            log_trade(timestamp, token, "BUY", current_price)  # Buy back the position
+#         last_trade = trade_info["type"]
+#         if last_trade == "BUY":
+#             log_trade(timestamp, token, "SELL", current_price)  # Sell to close
+#         elif last_trade == "SELL":
+#             log_trade(timestamp, token, "BUY", current_price)  # Buy back the position
 
-        del trade_positions[token]  # Remove from active trades
-        trade_cooldowns[token] = timestamp  # Apply cooldown
+#         del trade_positions[token]  # Remove from active trades
+#         trade_cooldowns[token] = timestamp  # Apply cooldown
 
 # -----------------------------------------------
 # Trade Decision Logic
@@ -173,22 +209,36 @@ def decide_trade(token, prices, timestamp):
         return  
 
     # Enter Trade
+    # Enter Trade
     if ema_short > ema_long and current_price <= lower_band and rsi < 30:
         trade_positions[token] = {"entry_price": current_price, "entry_time": timestamp, "type": "BUY"}
         log_trade(timestamp, token, "BUY", current_price)
-        # Call place_order() for BUY
-        place_order("BUY", token, current_price, session_data["data"]["jwtToken"], key_secret[0])
-        log_order(timestamp, token, "BUY", current_price)  # Log the order
+        success = place_order("BUY", token, current_price, session_data["data"]["jwtToken"], key_secret[0],symbol)
+        if success:
+            
+            print(f"Placing order: BUY for token {token} at {current_price}")
+            print(f"JWT Token: {session_data['data']['jwtToken']}")
+            print(f"API Key: {key_secret[0]}")
+            log_order(timestamp, token, "BUY", current_price)  # Log the order only on success
 
     elif ema_short < ema_long and current_price >= upper_band and rsi > 70:
         trade_positions[token] = {"entry_price": current_price, "entry_time": timestamp, "type": "SELL"}
         log_trade(timestamp, token, "SELL", current_price)
-        # Call place_order() for BUY
-        place_order("SELL", token, current_price, session_data["data"]["jwtToken"], key_secret[0])
-        log_order(timestamp, token, "SELL", current_price)  # Log the order
+        success = place_order("SELL", token, current_price, session_data["data"]["jwtToken"], key_secret[0],symbol)
+        if success:
+            
+            print(f"Placing order: SELL for token {token} at {current_price}")
+            print(f"JWT Token: {session_data['data']['jwtToken']}")
+            print(f"API Key: {key_secret[0]}")
+            log_order(timestamp, token, "SELL", current_price)  # Log the order only on success
 # -----------------------------------------------
 # WebSocket Handlers
 # -----------------------------------------------
+token_symbol_map = {
+    14977: 'POWERGRID-EQ',
+    4306: 'SHRIRAMFIN-EQ',
+    5258: 'INDUSINDBK-EQ',
+}
 
 def on_data(wsapp, message):
     """Handle incoming WebSocket data."""
@@ -196,6 +246,7 @@ def on_data(wsapp, message):
         token = str(message.get("token"))
         close_price = float(message.get("last_traded_price"))
         timestamp = datetime.datetime.now()
+        symbol = token_symbol_map.get(token, "UNKNOWN")  # Get the trading symbol from the map
 
         if token not in price_data:
             price_data[token] = []
@@ -204,7 +255,7 @@ def on_data(wsapp, message):
         if len(price_data[token]) > max(EMA_LONG_PERIOD, BOLLINGER_PERIOD):
             price_data[token].pop(0)
         
-        decide_trade(token, price_data[token], timestamp)
+        decide_trade(token, price_data[token], timestamp,symbol)
 
     except Exception as e:
         print(f"Error in on_data: {e}")
@@ -215,8 +266,7 @@ def on_data(wsapp, message):
 
 if __name__ == "__main__":
     # sws.on_open = lambda wsapp: sws.subscribe("stream_1", 3, [{"exchangeType": 1, "tokens": ["16675", "21808", "3499", "3351", "694"]}])
-    sws.on_open = lambda wsapp: sws.subscribe("stream_1", 3, [{"exchangeType": 1, "tokens": ["26009"]}])
-
+    sws.on_open = lambda wsapp: sws.subscribe("stream_1", 3, [{"exchangeType": 1, "tokens": list(token_symbol_map.keys())}])
     sws.on_data = on_data
     sws.on_error = lambda wsapp, error: print(f"WebSocket error: {error}")
     sws.connect()
